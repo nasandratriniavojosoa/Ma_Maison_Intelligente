@@ -1,0 +1,27 @@
+# Configuration et profil personnels
+data/config.json
+data/profile.json
+
+# Journaux et fichiers de sauvegarde
+*.log
+*.bak
+*.bak_*
+backup_*/
+backups/
+*.ino.ancien
+
+# Identifiants et secrets locaux
+.env
+.env.*
+secrets.h
+secrets.local.h
+firmware/secrets.h
+firmware/secrets.local.h
+*.pem
+*.key
+
+# Archives locales
+*.zip
+
+# Copies locales de protection
+*.avant_protection
