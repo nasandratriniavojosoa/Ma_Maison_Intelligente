@@ -52,6 +52,7 @@
     mqttConn: 'checking',            // checking | online | offline | unconfigured | noserver
     lastErr: null, ms: null,
     leds: [null, null, null, null, null, null, null],   // dernier état connu : {on, gpio, at}
+    sensors: { fumee: null, flamme: null, incendie: null, presence: null, ldr: null, mode: null },
     busy: [false, false, false, false, false, false, false],
     errs: [null, null, null, null, null, null, null],   // {msg, want}
     busyAll: false, errAll: null, busyAuto: false,
@@ -69,8 +70,108 @@
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function $(s, r) { return (r || document).querySelector(s); }
 
+
+  /* Historique local */
+  var HISTORY_KEY = 'mmi.history', HISTORY_MAX = 100;
+  var historyEntries = loadHistory(), lastEventState = null;
+
+  function loadHistory() {
+    try {
+      var a = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      return Array.isArray(a) ? a.filter(function (x) {
+        return x && typeof x.time === 'number' &&
+          typeof x.message === 'string';
+      }).slice(0, HISTORY_MAX) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveHistory() {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(historyEntries));
+    } catch (e) { console.warn('Historique local indisponible.', e); }
+  }
+
+  function addHistory(message) {
+    historyEntries.unshift({time: Date.now(), message: message});
+    if (historyEntries.length > HISTORY_MAX) historyEntries.length = HISTORY_MAX;
+    saveHistory();
+  }
+
+  function trackState(st) {
+    var n = {
+      leds: st.leds.map(function (x) { return !!x.on; }),
+      fumee: typeof st.fumee === 'boolean' ? st.fumee : null,
+      flamme: typeof st.flamme === 'boolean' ? st.flamme : null,
+      incendie: typeof st.incendie === 'boolean' ? st.incendie : null,
+      presence: typeof st.presence === 'boolean' ? st.presence : null
+    };
+    // Suivi persistant de l’alarme, même après rechargement de la PWA.
+    var fireKey = 'mmi.lastFireAlarmState';
+    if (typeof n.incendie === 'boolean') {
+      var fireNow = String(n.incendie);
+      var fireBefore = null;
+      try { fireBefore = localStorage.getItem(fireKey); } catch (e) {}
+
+      if (fireBefore === null) {
+        if (n.incendie) addHistory('ALARME INCENDIE ACTIVE au démarrage');
+      } else if (fireBefore !== fireNow) {
+        addHistory(n.incendie ? 'ALARME INCENDIE ACTIVÉE' : 'Alarme incendie désactivée');
+      }
+
+      try { localStorage.setItem(fireKey, fireNow); } catch (e) {}
+    }
+
+    if (lastEventState === null) { lastEventState = n; return; }
+
+    for (var i = 0; i < 7; i++) {
+      if (lastEventState.leds[i] !== n.leds[i])
+        addHistory('Éclairage : ' + ledName(i) +
+          (n.leds[i] ? ' allumé' : ' éteint'));
+    }
+
+    function changed(k, on, off) {
+      var a = lastEventState[k], b = n[k];
+      if (a !== null && b !== null && a !== b) addHistory(b ? on : off);
+    }
+    changed('fumee', 'Fumée/gaz détecté', 'Fumée/gaz non détecté');
+    changed('flamme', 'Flamme détectée', 'Flamme non détectée');
+    changed('presence', 'Présence détectée', 'Fin de présence détectée');
+    lastEventState = n;
+  }
+
+  function viewHistory() {
+    var out = '<div class="page-h"><div><h1>Historique</h1>' +
+      '<p>Changements observés par la PWA</p></div></div>' +
+      '<div class="bar"><button class="btn ghost" data-act="history-clear">' +
+      'Effacer l’historique</button></div>';
+    if (!historyEntries.length)
+      return out + '<div class="card"><p class="note">Aucun événement enregistré.</p></div>';
+    return out + '<div class="stack">' + historyEntries.map(function (x) {
+      return '<div class="card"><p><strong>' + esc(x.message) +
+        '</strong></p><p class="note">' +
+        esc(new Date(x.time).toLocaleString()) + '</p></div>';
+    }).join('') + '</div><p class="note">Maximum : 100 événements conservés sur ce navigateur.</p>';
+  }
+
   function applyState(st) {
-    for (var i = 0; i < 7; i++) S.leds[i] = { on: st.leds[i].on, gpio: st.leds[i].gpio, at: st.at };
+    if (!st || !Array.isArray(st.leds) || st.leds.length !== 7) {
+      throw new Error('État MQTT invalide : les 7 LED sont requises.');
+    }
+    trackState(st);
+    for (var i = 0; i < 7; i++) {
+      S.leds[i] = { on: !!st.leds[i].on, gpio: st.leds[i].gpio, at: st.at || Date.now() };
+    }
+    var previousFire = S.sensors.incendie;
+    S.sensors = {
+      fumee: typeof st.fumee === 'boolean' ? st.fumee : null,
+      flamme: typeof st.flamme === 'boolean' ? st.flamme : null,
+      incendie: typeof st.incendie === 'boolean' ? st.incendie : null,
+      presence: typeof st.presence === 'boolean' ? st.presence : null,
+      ldr: typeof st.ldr === 'number' ? st.ldr : null,
+      mode: typeof st.mode === 'string' ? st.mode : null
+    };
+    if (S.sensors.incendie === true && previousFire !== true) fireAlarmAlert();
+    if (S.sensors.incendie !== true) stopFireSound();
     S.conn = 'online'; S.ms = st.ms; S.lastErr = null;
   }
   function applyError(e) {
@@ -260,24 +361,36 @@
       '<div style="text-align:right"><span class="val">—</span><br>' + badgeSoon() + '</div></div>';
   }
 
+  function sensorCard(title, source, status, icon) {
+    return '<div class="card row" style="border-bottom:0"><span class="ico">' +
+      svg(icon || 'flame') + '</span><div class="t"><b>' + esc(title) +
+      '</b><small>' + esc(source) + '</small></div><div style="text-align:right"><span class="val">' +
+      esc(status) + '</span></div></div>';
+  }
+  function sensorLabel(value, yes, no) {
+    return value === null ? 'En attente MQTT' : (value ? yes : no);
+  }
   function viewSensors() {
-    return '<div class="page-h"><div><h1>Capteurs</h1><p>Aucune mesure tant qu’un capteur n’est pas intégré</p></div></div><div class="stack">' +
-      soonCard('therm', 'Température et humidité', 'DHT22') +
-      soonCard('flame', 'Gaz / fumée', 'MQ-2') +
-      soonCard('sun', 'Luminosité', 'Capteur de luminosité') +
-      soonCard('rain', 'Pluie', 'Capteur de pluie') +
-      soonCard('drop', 'Humidité du sol', 'Capteur d’humidité du sol') + '</div>' +
-      '<p class="note">Ces capteurs ne figurent pas dans le firmware ESP32 actuel (qui ne pilote que les 7 LED). Les valeurs afficheront « — » jusqu’à leur intégration réelle ; aucune valeur d’exemple n’est affichée.</p>';
+    var d = S.sensors;
+    return '<div class="page-h"><div><h1>Capteurs</h1><p>Valeurs reçues du firmware ESP32 par MQTT</p></div></div><div class="stack">' +
+      sensorCard('Fumée / gaz', 'MQ-2 · sortie numérique GPIO25', sensorLabel(d.fumee, 'Détecté', 'Non détecté'), 'flame') +
+      sensorCard('Flamme', 'KY-026 · sortie numérique GPIO32', sensorLabel(d.flamme, 'Détectée', 'Non détectée'), 'flame') +
+      sensorCard('Luminosité', 'LDR · GPIO34', d.ldr === null ? 'En attente MQTT' : String(d.ldr), 'sun') +
+      sensorCard('Présence', 'PIR · GPIO27', sensorLabel(d.presence, 'Présence détectée', 'Aucune présence'), 'motion') +
+      '</div><p class="note">Les états proviennent du firmware. La LDR affiche sa valeur brute, pas un pourcentage de luminosité.</p>';
   }
 
   function viewSecurity() {
-    return '<div class="page-h"><div><h1>Sécurité</h1><p>Structure prête, fonctions non activées</p></div></div><div class="stack">' +
-      soonCard('motion', 'Détection de mouvement', 'Capteur PIR') +
-      soonCard('eye', 'Détection infrarouge', 'Capteur infrarouge') +
-      soonCard('flame', 'Gaz / fumée', 'MQ-2') +
-      soonCard('card', 'Contrôle d’accès', 'Lecteur RFID RC522 + cartes') +
-      soonCard('camera', 'Caméra', 'ESP32-S3-CAM') + '</div>' +
-      '<p class="note">Aucune de ces fonctions n’est active : elles seront branchées après l’intégration matérielle et logicielle correspondante.</p>';
+    var d = S.sensors;
+    var alarm = d.incendie === null ? 'En attente MQTT' :
+      (d.incendie ? 'ALARME ACTIVE' : 'Aucune alarme signalée');
+    return '<div class="page-h"><div><h1>Sécurité</h1><p>Surveillance reçue par MQTT</p></div>' +
+      '<button class="btn ghost" data-act="enable-notifications" title="Activer les notifications et le son" aria-label="Activer les notifications et le son" style="padding:8px 11px;min-width:42px;border-radius:50%;font-size:1.15rem">🔔</button></div><div class="stack">' +
+      sensorCard('Alarme incendie', 'MQ-2 ou KY-026', alarm, 'shield') +
+      sensorCard('Fumée / gaz', 'MQ-2 · GPIO25', sensorLabel(d.fumee, 'Détecté', 'Non détecté'), 'flame') +
+      sensorCard('Flamme', 'KY-026 · GPIO32', sensorLabel(d.flamme, 'Détectée', 'Non détectée'), 'flame') +
+      sensorCard('Présence', 'PIR · GPIO27', sensorLabel(d.presence, 'Présence détectée', 'Aucune présence'), 'motion') +
+      '</div><p class="note">Prototype expérimental : cette fonction ne remplace pas un détecteur incendie certifié.</p>';
   }
 
   function instInner() {
@@ -322,12 +435,12 @@
       '<h2 id="devtap" data-act="dev-tap">Développeur</h2><section class="card dev" id="devsec" data-act="dev-tap">' + devInner() + '</section>';
   }
 
-  var VIEWS = { home: viewHome, lights: viewLights, sensors: viewSensors, security: viewSecurity, settings: viewSettings };
+  var VIEWS = { home: viewHome, lights: viewLights, sensors: viewSensors, security: viewSecurity, history: viewHistory, settings: viewSettings };
 
   /* ---------- Rendu ---------- */
   function route() { var r = (location.hash.replace(/^#\/?/, '') || 'home'); return VIEWS[r] ? r : 'home'; }
   var lastSig = '';
-  function sig() { return JSON.stringify([route(), S.conn, S.mqttConn, S.ms, S.leds.map(function (l) { return l && l.on; }), S.busy, S.busyAll, S.errs, S.errAll, S.names, !!S.deferredInstall, S.installed]); }
+  function sig() { return JSON.stringify([route(), S.conn, S.mqttConn, S.ms, S.leds.map(function (l) { return l && l.on; }), S.sensors, historyEntries, S.busy, S.busyAll, S.errs, S.errAll, S.names, !!S.deferredInstall, S.installed]); }
 
   function render() {
     var r = route(), v = $('#view');
@@ -354,13 +467,191 @@
     if (sig() !== lastSig) render(); else updateBanner();
   }
 
+  var fireVoiceAudio = null;
+  var fireAudioContext = null;
+  var fireAlarmInterval = null;
+  var fireAlarmOscillator = null;
+  var fireAlarmGain = null;
+
+  function playFireVoice() {
+    if (S.sensors.incendie !== true) return;
+    try {
+      if (!fireVoiceAudio) {
+        fireVoiceAudio = new Audio('assets/audio/incendie.mp3');
+        fireVoiceAudio.loop = true;
+        fireVoiceAudio.preload = 'auto';
+      }
+      var p = fireVoiceAudio.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(function (e) {
+          console.warn('Lecture de la voix bloquée par le navigateur.', e);
+        });
+      }
+    } catch (e) {
+      console.warn('Voix d’alerte indisponible.', e);
+    }
+  }
+
+  function playFireSound() {
+    playFireVoice();
+    if (fireAlarmInterval !== null) return;
+
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+
+      if (!fireAudioContext) fireAudioContext = new AC();
+
+      function startAlarm() {
+        if (S.sensors.incendie !== true || fireAlarmInterval !== null) return;
+
+        try {
+          fireAlarmOscillator = fireAudioContext.createOscillator();
+          fireAlarmGain = fireAudioContext.createGain();
+          fireAlarmOscillator.type = 'square';
+          fireAlarmOscillator.frequency.value = 880;
+          fireAlarmGain.gain.value = 0.10;
+          fireAlarmOscillator.connect(fireAlarmGain);
+          fireAlarmGain.connect(fireAudioContext.destination);
+          fireAlarmOscillator.start();
+
+          var high = true;
+          fireAlarmInterval = window.setInterval(function () {
+            if (S.sensors.incendie !== true) {
+              stopFireSound();
+              return;
+            }
+            high = !high;
+            try {
+              fireAlarmOscillator.frequency.setTargetAtTime(
+                high ? 880 : 660, fireAudioContext.currentTime, 0.03
+              );
+            } catch (e) {}
+          }, 450);
+        } catch (e) {
+          stopFireSound();
+        }
+      }
+
+      if (fireAudioContext.state === 'suspended') {
+        fireAudioContext.resume().then(startAlarm).catch(function () {});
+      } else {
+        startAlarm();
+      }
+    } catch (e) {
+      console.warn('Son d’alerte indisponible.', e);
+    }
+  }
+
+  function stopFireSound() {
+    if (fireVoiceAudio) {
+      fireVoiceAudio.pause();
+      fireVoiceAudio.currentTime = 0;
+    }
+    if (fireAlarmInterval !== null) {
+      window.clearInterval(fireAlarmInterval);
+      fireAlarmInterval = null;
+    }
+    try {
+      if (fireAlarmOscillator) {
+        fireAlarmOscillator.stop();
+        fireAlarmOscillator.disconnect();
+      }
+    } catch (e) {}
+    try {
+      if (fireAlarmGain) fireAlarmGain.disconnect();
+    } catch (e) {}
+    fireAlarmOscillator = null;
+    fireAlarmGain = null;
+  }
+
+  function showFireNotification() {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    var options = {
+      body: 'Le système a signalé une alarme incendie. Vérifiez immédiatement les lieux.',
+      tag: 'mmi-incendie',
+      requireInteraction: true,
+      vibrate: [300, 100, 300, 100, 500]
+    };
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then(function (reg) {
+        if (reg.showNotification) return reg.showNotification('ALERTE INCENDIE', options);
+        new Notification('ALERTE INCENDIE', options);
+      }).catch(function () {
+        try { new Notification('ALERTE INCENDIE', options); } catch (e) {}
+      });
+    } else {
+      try { new Notification('ALERTE INCENDIE', options); } catch (e) {}
+    }
+  }
+
+  function fireAlarmAlert() {
+    playFireSound();
+    showFireNotification();
+  }
+
+  function enableFireNotifications() {
+    if (!('Notification' in window)) {
+      toast('Notifications non prises en charge par ce navigateur.', 'bad');
+      return;
+    }
+    var enableAudio = function () {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          if (!fireAudioContext) fireAudioContext = new AC();
+          if (fireAudioContext.state === 'suspended') fireAudioContext.resume();
+        }
+      } catch (e) {}
+    };
+    enableAudio();
+    if (S.sensors.incendie === true) playFireSound();
+    if (Notification.permission === 'granted') {
+      toast('Notifications déjà autorisées. Le son dépend du navigateur.', 'ok');
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      toast('Notifications bloquées : autorisez-les dans les réglages Android du navigateur.', 'bad');
+      return;
+    }
+    Notification.requestPermission().then(function (permission) {
+      if (permission === 'granted') {
+        toast('Notifications autorisées.', 'ok');
+        if (S.sensors.incendie === true) showFireNotification();
+      } else {
+        toast('Autorisation des notifications refusée.', 'bad');
+      }
+    }).catch(function () {
+      toast('Impossible de demander l’autorisation.', 'bad');
+    });
+  }
+
   function updateBanner() {
-    var b = $('#banner'), r = route();
-    if (r === 'settings' || S.conn === 'online' || S.conn === 'checking') { b.hidden = true; return; }
+    var b = $('#banner');
+    if (!b) return;
+
+    if (S.sensors.incendie === true) {
+      b.className = 'fire-alert';
+      var stale = S.conn !== 'online';
+      b.innerHTML = '<span role="alert">⚠️ ALERTE INCENDIE — ' +
+        (stale ? 'dernier état actif ; connexion non actualisée' : 'alarme active, vérifiez les lieux') +
+        '</span><a href="#/security">Sécurité</a>';
+      b.hidden = false;
+      return;
+    }
+
+    var r = route();
+    if (r === 'settings' || S.conn === 'online' || S.conn === 'checking') {
+      b.hidden = true;
+      return;
+    }
     b.className = S.conn === 'offline' ? '' : 'warn';
-    b.innerHTML = '<span>' + esc(ESP.explain(S.lastErr || { code: S.conn === 'unconfigured' ? 'not_configured' : 'unreachable' })) + '</span><a href="#/settings">Réglages</a>';
+    b.innerHTML = '<span>' +
+      esc(ESP.explain(S.lastErr || { code: S.conn === 'unconfigured' ? 'not_configured' : 'unreachable' })) +
+      '</span><a href="#/settings">Réglages</a>';
     b.hidden = false;
   }
+
 
   /* ---------- Réglages : connexion ---------- */
   function loadConfigIntoForm() {
@@ -505,6 +796,21 @@
     else if (act === 'all-on') commandAll(true);
     else if (act === 'all-off') commandAll(false);
     else if (act === 'mode-auto') commandAuto();
+    else if (act === 'history-clear') {
+      if (window.confirm('Effacer tous les événements ?')) {
+        historyEntries = [];
+        // Si l’alarme est toujours active, conserver un événement visible.
+        if (S.sensors.incendie === true) {
+          historyEntries.unshift({
+            time: Date.now(),
+            message: 'ALARME INCENDIE TOUJOURS ACTIVE après effacement'
+          });
+        }
+        saveHistory();
+        render();
+      }
+    }
+    else if (act === 'enable-notifications') enableFireNotifications();
     else if (act === 'retry-all') commandAll(S.errAll ? S.errAll.want : true);
     else if (act === 'rename') {
       var n = window.prompt('Nom de la LED ' + (i + 1) + ' (vide = nom par défaut)', S.names[i] || ledName(i));
@@ -538,7 +844,7 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
   setInterval(function () {
     var r = route();
-    if (!document.hidden && (r === 'home' || r === 'lights')) refresh();
+    if (!document.hidden && (r === 'home' || r === 'lights' || r === 'sensors' || r === 'security' || r === 'history')) refresh();
   }, 6000);
 
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {

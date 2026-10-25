@@ -25,3 +25,4 @@ firmware/secrets.local.h
 
 # Copies locales de protection
 *.avant_protection
+*.bak-*

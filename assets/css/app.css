@@ -107,6 +107,10 @@ input:focus{outline:2px solid var(--brand);border-color:transparent}
 /* Bannière + toasts */
 #banner{position:sticky;top:0;z-index:20;padding:calc(10px + var(--safe-t)) 16px 10px;background:var(--bad);color:#fff;font-size:.9rem;display:flex;gap:10px;align-items:center;justify-content:space-between}
 #banner.warn{background:#b45309}
+#banner.fire-alert{background:#dc2626;border-bottom:4px solid #fff;padding:calc(14px + var(--safe-t)) 16px 14px;font-size:1rem;font-weight:900;line-height:1.45;box-shadow:0 0 24px rgba(239,68,68,.9);animation:fireAlertBlink .8s steps(2,start) infinite}
+#banner.fire-alert span{flex:1}
+#banner.fire-alert a{background:#fff;color:#991b1b;padding:8px 11px;border-radius:10px;text-decoration:none;font-weight:800;white-space:nowrap}
+@keyframes fireAlertBlink{0%,100%{background:#dc2626;box-shadow:0 0 24px rgba(239,68,68,.9)}50%{background:#7f0000;box-shadow:0 0 5px rgba(127,0,0,.5)}}50%{box-shadow:0 4px 25px rgba(239,68,68,.75)}}
 #banner a{color:#fff;font-weight:700;white-space:nowrap}
 #banner[hidden]{display:none}
 #toasts{position:fixed;left:0;right:0;bottom:calc(84px + var(--safe-b));display:flex;flex-direction:column;align-items:center;gap:8px;z-index:30;pointer-events:none;padding:0 16px}

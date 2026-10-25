@@ -67,7 +67,21 @@
 
     function status() {
       return call('/').then(function (r) {
-        var s = parseState(r.body);
+        var s;
+        if (r.state && Array.isArray(r.state.leds) && r.state.leds.length === LED_COUNT) {
+          s = r.state;
+          s.leds = s.leds.map(function (led, i) {
+            return {
+              index: i,
+              number: i + 1,
+              gpio: led.gpio !== undefined ? led.gpio : DEFAULT_PINS[i],
+              on: !!led.on
+            };
+          });
+          s.at = s.at || Date.now();
+        } else {
+          s = parseState(r.body);
+        }
         s.ms = r.ms;
         return s;
       });
@@ -76,7 +90,8 @@
     function setLed(index, want) {
       if (!(index >= 0 && index < LED_COUNT)) return Promise.reject(EspError('bad_response', 'LED inconnue'));
       return call('/led/' + index + '/' + (want ? 'on' : 'off')).then(function (r) {
-        var after = parseState(r.body);
+        var after = (r.state && Array.isArray(r.state.leds))
+          ? r.state : parseState(r.body);
         after.ms = r.ms;
         if (after.leds[index].on !== want) throw EspError('mismatch');
         return { state: after, changed: true };
@@ -85,7 +100,8 @@
 
     function setAll(want) {
       return call(want ? '/all/on' : '/all/off').then(function (r) {
-        var after = parseState(r.body);
+        var after = (r.state && Array.isArray(r.state.leds))
+          ? r.state : parseState(r.body);
         after.ms = r.ms;
         for (var i = 0; i < LED_COUNT; i++) if (after.leds[i].on !== want) throw EspError('mismatch');
         return { state: after };
