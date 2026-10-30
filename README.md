@@ -3,7 +3,7 @@
 Cette version conserve l’interface PWA de v1.3 mais remplace la liaison application→ESP32 par un relais MQTT local : PWA → PHP sur `localhost:8000` → Mosquitto TCP `127.0.0.1:1883` → ESP32. Aucun WebSocket n’est nécessaire pour cette architecture. Le relais PHP utilise `mosquitto_pub` et `mosquitto_sub`.
 
 ## Important — avant de téléverser
-- Le firmware MQTT est dans `programmes/MaMaisonIntelligente/MaMaisonIntelligente.ino`.
+- Le firmware MQTT est dans `programmes/ESP32_1_Domotique_MQTT/ESP32_1_Domotique_MQTT.ino`.
 - Il nécessite la bibliothèque **PubSubClient** (auteur knolleary) dans ArduinoDroid.
 - Le SSID et le mot de passe du hotspot sont des valeurs de remplacement dans le fichier. Renseignez-les localement.
 - `mqtt_server` doit être l’adresse IPv4 du téléphone sur le réseau du hotspot, par exemple `10.91.34.2` seulement si `ifconfig` confirme encore cette adresse sur `ap0`.
@@ -20,7 +20,7 @@ Cette version conserve l’interface PWA de v1.3 mais remplace la liaison applic
 
 ## Installation ArduinoDroid
 1. Importez la bibliothèque PubSubClient depuis son dépôt officiel : https://github.com/knolleary/pubsubclient (si ArduinoDroid demande une archive ZIP, utilisez le ZIP du dépôt).
-2. Ouvrez `programmes/MaMaisonIntelligente/MaMaisonIntelligente.ino`.
+2. Ouvrez `programmes/ESP32_1_Domotique_MQTT/ESP32_1_Domotique_MQTT.ino`.
 3. Renseignez `ssid`, `password` et `mqtt_server`.
 4. Téléversez le firmware sur l’ESP32.
 5. Ouvrez le moniteur série à 115200 bauds. Vérifiez la connexion Wi-Fi et MQTT.
